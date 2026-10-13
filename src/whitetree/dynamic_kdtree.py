@@ -12,7 +12,6 @@ import threading
 
 import numpy as np
 from scipy.spatial import cKDTree
-from scipy.spatial.distance import cdist
 
 __all__ = ["DynamicKDTree"]
 
@@ -28,6 +27,38 @@ def _in_sorted(values, table):
     pos = np.searchsorted(table, values)
     pos_c = np.minimum(pos, table.size - 1)
     return table[pos_c] == values
+
+
+def _ckd_dist(x, pts):
+    """Euclidean distances (nq, m) summed in the same order as cKDTree.
+
+    scipy's `sqeuclidean_distance_double` keeps four accumulators (dims 0,4,8.. / 1,5,9..
+    / ...), adds them as ((a0 + a1) + a2) + a3, then adds the leftover dims one by one.
+    `cdist` sums sequentially, which differs from cKDTree by a few ulp once d >= 8. This
+    function repeats cKDTree's order so the scanned components agree bit for bit.
+    """
+    nq, d = x.shape
+    full = d - d % 4
+    acc = [None, None, None, None]
+    for j in range(full):
+        t = x[:, j, None] - pts[:, j]
+        t *= t
+        lane = j & 3
+        if acc[lane] is None:
+            acc[lane] = t
+        else:
+            acc[lane] += t
+    if full:
+        s = acc[0] + acc[1]
+        s += acc[2]
+        s += acc[3]
+    else:
+        s = np.zeros((nq, len(pts)))
+    for j in range(full, d):
+        t = x[:, j, None] - pts[:, j]
+        t *= t
+        s += t
+    return np.sqrt(s, out=s)
 
 
 def _select_k(d, gid, k):
@@ -348,11 +379,11 @@ class DynamicKDTree:
         return len(comp[1])
 
     def _brute(self, pts, gids, x, kk, bound):
-        """Scan a component with cdist. Keep cdist: the expanded (x^2 - 2xp + p^2) form
-        is off by ~1e-14 and breaks bit-for-bit agreement with cKDTree."""
+        """Scan a component directly. The expanded (x^2 - 2xp + p^2) form is off by ~1e-14
+        and plain cdist by a few ulp at d >= 8; `_ckd_dist` matches cKDTree exactly."""
         m = len(gids)
         kq = min(kk, m)
-        d = cdist(x, pts)
+        d = _ckd_dist(x, pts)
         if np.isfinite(bound):
             d[d > bound] = np.inf
         if len(x) == 1:

@@ -474,6 +474,23 @@ check("inserting NaNs in a batch is refused",
       raises(lambda: mi_n.insert_many(np.vstack([r6.randn(3, 3), bad_pt]))))
 check("the index is untouched after a refused insert", len(mi_n) == 200, f"len={len(mi_n)}")
 
+print("\n15. Scanned runs match cKDTree bit for bit at d >= 8")
+# Small runs and the micro buffer are scanned directly. cdist sums the squares in a
+# different order from cKDTree, which moved distances by a few ulp once d >= 8.
+for dd in (4, 8, 9, 12, 16):
+    r15 = np.random.RandomState(150 + dd)
+    X15 = r15.randn(6000, dd) * r15.lognormal(0, 1, dd)
+    t15 = DynamicKDTree(dd).bulk_load(X15[:4000])
+    t15.insert_many(X15[4000:])                    # leaves runs small enough to be scanned
+    Q15 = r15.randn(300, dd) * X15.std(0)
+    ref15 = cKDTree(X15).query(Q15, k=10)[0]
+    got_b = t15.query(Q15, k=10, workers=1)[0]
+    got_s = np.vstack([t15.query(q, k=10, workers=1)[0] for q in Q15[:100]])
+    check(f"d={dd:<2} batch queries: distances identical", np.array_equal(got_b, ref15),
+          f"max diff {np.abs(got_b - ref15).max():.1e}")
+    check(f"d={dd:<2} single queries: distances identical", np.array_equal(got_s, ref15[:100]),
+          f"max diff {np.abs(got_s - ref15[:100]).max():.1e}")
+
 print("\n" + "=" * 60)
 print("all checks passed" if not FAIL else f"{len(FAIL)} FAILED: {FAIL}")
 raise SystemExit(1 if FAIL else 0)
